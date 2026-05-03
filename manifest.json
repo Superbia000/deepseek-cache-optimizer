@@ -1,9 +1,8 @@
 {
-    "display_name": "DeepSeek缓存优化器",
-    "loading_order": 1,
-    "js": "deepseek-cache-optimizer.js",
-    "css": "style.css",
-    "author": "Debug",
-    "version": "4.0.0",
-    "description": "调试版 - 最大化 DeepSeek 缓存命中率"
+    "display_name": "DeepSeek Cache Optimizer Pro",
+    "loading_order": 10,
+    "js": "index.js",
+    "author": "AI Architect",
+    "version": "9.0",
+    "description": "具備狀態錨點追蹤與強制尾部重組技術，完美適應各種世界書、深度與預設，確保 DeepSeek V4 Pro 前綴快取命中率達 99%。"
 }

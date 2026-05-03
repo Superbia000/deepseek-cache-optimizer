@@ -1,30 +1,16 @@
-.dco-settings-section {
-    margin: 20px 0;
-    padding: 15px;
+.deepseek-cache-container {
+    padding: 12px;
+    background-color: rgba(20, 20, 20, 0.5);
     border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 10px;
-    background-color: var(--SmartThemeBodyBackgroundColor);
-}
-.dco-setting-row {
-    margin: 10px 0;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-.dco-stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 10px;
-    margin-top: 10px;
-}
-.dco-stat-card {
-    background-color: var(--SmartThemeBackgroundColor);
-    padding: 8px;
     border-radius: 8px;
-    text-align: center;
+    margin-bottom: 10px;
 }
-.dco-stat-value { font-size: 1.2em; font-weight: bold; }
-.hit-high { color: #4caf50; }
-.hit-mid { color: #ff9800; }
-.hit-low { color: #f44336; }
-.dco-note { font-size: 0.8em; color: var(--SmartThemeTextColorDim); text-align: center; margin-top: 10px; }
+.deepseek-cache-container .title-wrapper {
+    margin-bottom: 8px;
+    margin-top: 8px;
+    color: var(--SmartThemeBodyColor);
+}
+.deepseek-cache-container hr {
+    border-color: rgba(255, 255, 255, 0.1);
+    margin: 10px 0;
+}
