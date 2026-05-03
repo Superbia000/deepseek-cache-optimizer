@@ -5,60 +5,48 @@ console.log("==================================================");
 const EXTENSION_NAME = "deepseek-cache-optimizer";
 const defaultSettings = { enabled: true, chunkSize: 10 };
 let settings = { ...defaultSettings };
-let ST_extension_settings = null; // 全域設定參考
+let ST_extension_settings = null;
 
-// 核心快取狀態錨點
 let cacheState = {
     chatId: null,
     anchorContent: null
 };
 
 // ==========================================
-// 1. 絕對安全初始化模組 (防崩潰保底機制)
+// 1. 絕對安全初始化模組 (含自動修復機制)
 // ==========================================
 async function init() {
-    console.log("[DS-Cache-Opt] ⏳ [2/7] 嘗試載入 SillyTavern 核心設定...");
+    console.log("[DS-Cache-Opt] ⏳ [2/7] 嘗試載入設定...");
     
-    // 嘗試方法 A: ST 現代標準 API
     if (typeof SillyTavern !== 'undefined' && typeof SillyTavern.getContext === 'function') {
         let context = SillyTavern.getContext();
-        if (context && context.extension_settings) {
-            ST_extension_settings = context.extension_settings;
-            console.log("[DS-Cache-Opt] ✅ [3/7] 成功從 SillyTavern.getContext() 取得設定！");
-        }
+        if (context && context.extension_settings) ST_extension_settings = context.extension_settings;
     }
-
-    // 嘗試方法 B: 傳統全域變數
     if (!ST_extension_settings && typeof window.extension_settings !== 'undefined') {
         ST_extension_settings = window.extension_settings;
-        console.log("[DS-Cache-Opt] ✅ [3/7] 成功從 window.extension_settings 取得設定！");
     }
-
-    // 嘗試方法 C: 終極保底 (如果 ST 改版把變數都藏起來了，就用暫存記憶體，保證不崩潰)
     if (!ST_extension_settings) {
-        console.warn("[DS-Cache-Opt] ⚠️ [3/7] 無法找到 ST 的擴充設定變數，將使用暫存記憶體啟動 (重新整理後設定會還原預設)。");
-        ST_extension_settings = {}; // 給予空物件，阻止 undefined 崩潰
+        ST_extension_settings = {}; 
     }
-
-    // 初始化設定值
     if (!ST_extension_settings[EXTENSION_NAME]) {
         ST_extension_settings[EXTENSION_NAME] = {};
     }
     
-    // 安全地合併設定
+    // 讀取設定
     settings = Object.assign({}, defaultSettings, ST_extension_settings[EXTENSION_NAME]);
-    console.log("[DS-Cache-Opt] ⚙️ [4/7] 當前設定檔讀取完畢:", settings);
+    
+    // 🔧 強制修復損壞的設定 (除非明確被設為 false，否則一律強制作為 true)
+    if (settings.enabled !== false) settings.enabled = true;
+    settings.chunkSize = parseInt(settings.chunkSize) || 10;
+    
+    console.log("[DS-Cache-Opt] ⚙️ [4/7] 當前設定檔:", settings);
 
-    // 啟動 UI 與網路攔截
     injectUI();
     setupFetchHijack();
 }
 
-// 安全儲存設定
 function safeSaveSettings() {
-    if (ST_extension_settings) {
-        ST_extension_settings[EXTENSION_NAME] = settings;
-    }
+    if (ST_extension_settings) ST_extension_settings[EXTENSION_NAME] = settings;
     
     if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
         let context = SillyTavern.getContext();
@@ -73,19 +61,20 @@ function safeSaveSettings() {
 }
 
 // ==========================================
-// 2. 暴力 UI 注入 (輪詢直到成功)
+// 2. UI 注入
 // ==========================================
 function injectUI() {
-    console.log("[DS-Cache-Opt] ⏳ [5/7] 準備注入 UI 介面...");
+    console.log("[DS-Cache-Opt] ⏳ [5/7] 準備注入 UI...");
     const uiHTML = `
     <div id="ds_cache_ui_box" style="padding:15px; background:rgba(20,20,20,0.8); border:2px solid #00ff88; border-radius:8px; margin-bottom:10px;">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header" style="color:#00ff88;">
-                <b>🟢 DeepSeek 快取引擎 V4.1 (運行中)</b>
+                <b>🟢 DeepSeek 快取引擎 V4.2</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content" style="padding-top:10px;">
                 <label class="checkbox_label">
+                    <!-- 確保 Checkbox 狀態與變數一致 -->
                     <input type="checkbox" id="ds_cache_enable" ${settings.enabled ? 'checked' : ''}>
                     <span>啟用 DeepSeek 底層劫持快取引擎</span>
                 </label>
@@ -93,7 +82,6 @@ function injectUI() {
                 <div>
                     <label>超前丟棄訊息數 (Chunk Size):</label>
                     <input type="number" id="ds_chunk_size" class="text_pole" min="2" max="30" value="${settings.chunkSize}" style="width:60px; margin-left:10px;">
-                    <br><small style="color:#a8a8a8;">當 ST 刪除舊訊息時，超前丟棄 N 條以保證前綴靜止。</small>
                 </div>
             </div>
         </div>
@@ -103,9 +91,8 @@ function injectUI() {
     if ($('#extensions_settings').length > 0) {
         if ($('#ds_cache_ui_box').length === 0) {
             $('#extensions_settings').append(uiHTML);
-            console.log("[DS-Cache-Opt] 🖥️ [6/7] UI 介面注入成功！請檢查 ST 的 Extensions 面板。");
+            console.log("[DS-Cache-Opt] 🖥️ [6/7] UI 注入成功！");
             
-            // 綁定事件
             $('#ds_cache_enable').on('change', function() {
                 settings.enabled = !!$(this).prop('checked');
                 safeSaveSettings();
@@ -114,11 +101,9 @@ function injectUI() {
             $('#ds_chunk_size').on('input', function() {
                 settings.chunkSize = parseInt($(this).val()) || 10;
                 safeSaveSettings();
-                console.log("[DS-Cache-Opt] 🔘 ChunkSize 更改為:", settings.chunkSize);
             });
         }
     } else {
-        console.warn("[DS-Cache-Opt] ⚠️ [5/7] 找不到 #extensions_settings 面板，1秒後重試...");
         setTimeout(injectUI, 1000);
     }
 }
@@ -128,10 +113,11 @@ function injectUI() {
 // ==========================================
 function optimizeMessages(messages) {
     console.log(`\n--- [DS-Cache-Opt] 🧠 開始進行陣列重組 ---`);
-    console.log(`[DS-Cache-Opt] 原始陣列長度: ${messages.length}`);
+    console.log(`[DS-Cache-Opt] 原始陣列長度: ${messages.length}, 當前啟用狀態: ${settings.enabled}`);
 
+    // 加入更詳細的跳過原因
     if (!settings.enabled || messages.length < 3) {
-        console.log("[DS-Cache-Opt] ⏭️ 外掛停用或陣列過短，跳過處理。");
+        console.log(`[DS-Cache-Opt] ⏭️ 跳過處理。原因: (啟用狀態=${settings.enabled}, 陣列長度=${messages.length})`);
         return messages;
     }
 
@@ -146,7 +132,7 @@ function optimizeMessages(messages) {
             staticTop.push(msg);
         } else if (msg.role === 'system') {
             volatile.push(msg);
-            console.log(`[DS-Cache-Opt] 🔍 偵測到動態/世界書 System，深度 index: ${i}`);
+            console.log(`[DS-Cache-Opt] 🔍 抽出動態/世界書 System，深度 index: ${i}`);
         } else {
             history.push(msg);
         }
@@ -166,10 +152,10 @@ function optimizeMessages(messages) {
             if (history.length > chunk + 2) {
                 history = history.slice(chunk);
                 cacheState.anchorContent = history[0].content;
-                console.log(`[DS-Cache-Opt] 🚧 錨點丟失 (上下文推進)，超前剔除 ${chunk} 條，建立新錨點。`);
+                console.log(`[DS-Cache-Opt] 🚧 錨點丟失，超前剔除 ${chunk} 條舊訊息建立新護城河。`);
             } else {
                 cacheState.anchorContent = history[0].content;
-                console.log(`[DS-Cache-Opt] 🆕 歷史過短，直接建立首條為新錨點。`);
+                console.log(`[DS-Cache-Opt] 🆕 建立初始快取錨點。`);
             }
         }
     }
@@ -178,17 +164,17 @@ function optimizeMessages(messages) {
     if (volatile.length > 0) {
         let combined = volatile.map(m => m.content).join("\n\n---\n\n");
         optimized.push({ role: 'system', content: combined });
-        console.log(`[DS-Cache-Opt] 📦 已將 ${volatile.length} 條動態 System 合併並置於最底部。`);
+        console.log(`[DS-Cache-Opt] 📦 合併 ${volatile.length} 條動態設定，已強行置底。`);
     }
     optimized.push(latestUser);
 
-    console.log(`[DS-Cache-Opt] ✅ 重組完成！新陣列長度: ${optimized.length}`);
+    console.log(`[DS-Cache-Opt] ✅ 重組完成！送出陣列長度: ${optimized.length}`);
     console.log(`--- [DS-Cache-Opt] 重組結束 ---\n`);
     return optimized;
 }
 
 // ==========================================
-// 4. 底層網路劫持 (Fetch Interceptor)
+// 4. 底層網路劫持
 // ==========================================
 function setupFetchHijack() {
     console.log("[DS-Cache-Opt] 🛡️ [7/7] 注入 Fetch 底層攔截器...");
@@ -230,10 +216,7 @@ function setupFetchHijack() {
         }
         return originalFetch.apply(this, args);
     };
-    console.log("[DS-Cache-Opt] 🎉 初始化流程全部完成！外掛現正全面守護您的 DeepSeek 快取。");
+    console.log("[DS-Cache-Opt] 🎉 初始化流程全部完成！");
 }
 
-// 延遲啟動以確保 DOM 和 ST 全域變數已準備好
-setTimeout(() => {
-    init();
-}, 500);
+setTimeout(init, 500);
