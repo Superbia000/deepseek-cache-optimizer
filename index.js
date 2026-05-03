@@ -1,9 +1,9 @@
 console.log("==================================================");
-console.log("[DS-Cache-Opt] 🚀 [1/7] V6.0 絕對零度快取防禦啟動...");
+console.log("[DS-Cache-Opt] 🚀 [1/4] V7.0 安全原生快取架構啟動...");
 console.log("==================================================");
 
 const EXTENSION_NAME = "deepseek-cache-optimizer";
-const OPTIMIZED_FLAG = "_ds_optimized_v6";
+const OPTIMIZED_FLAG = "_ds_optimized_v7";
 
 const defaultSettings = { enabled: true, chunkSize: 10 };
 let settings = { ...defaultSettings };
@@ -19,8 +19,8 @@ let cacheState = {
 // ==========================================
 // 1. 安全初始化與全域設定
 // ==========================================
-async function init() {
-    console.log("[DS-Cache-Opt] ⏳ [2/7] 載入設定檔...");
+function init() {
+    console.log("[DS-Cache-Opt] ⏳ [2/4] 載入設定檔...");
     if (typeof SillyTavern !== 'undefined' && typeof SillyTavern.getContext === 'function') {
         let context = SillyTavern.getContext();
         if (context && context.extension_settings) ST_extension_settings = context.extension_settings;
@@ -36,9 +36,7 @@ async function init() {
     settings.chunkSize = parseInt(settings.chunkSize) || 10;
     
     injectUI();
-    await hookSillyTavernNative(); // 第一重：記憶體攔截
-    setupXHRHijack();              // 第二重：XHR 攔截
-    setupFetchHijack();            // 第三重：Fetch 攔截
+    setupNativeHook(); // 放棄 Fetch 劫持，全心投入最安全的原生 Hook
 }
 
 function safeSaveSettings() {
@@ -46,7 +44,6 @@ function safeSaveSettings() {
     if (typeof window.saveSettingsDebounced === 'function') window.saveSettingsDebounced();
 }
 
-// 防崩潰：安全提取訊息內容 (解決多模態或陣列導致的崩潰)
 function safeGetText(msg) {
     if (!msg || !msg.content) return "";
     if (typeof msg.content === 'string') return msg.content;
@@ -57,7 +54,6 @@ function safeGetText(msg) {
     return String(msg.content);
 }
 
-// 產生防呆特徵金鑰
 function getAnchorKey(chatArray, index) {
     if (index >= chatArray.length) return null;
     let key = `${chatArray[index].role}::${safeGetText(chatArray[index]).substring(0, 50)}`;
@@ -71,26 +67,27 @@ function getAnchorKey(chatArray, index) {
 // 2. 原生風格 UI 注入
 // ==========================================
 function injectUI() {
-    console.log("[DS-Cache-Opt] ⏳ [3/7] 注入原生 UI...");
+    console.log("[DS-Cache-Opt] ⏳ [3/4] 注入原生 UI...");
     const uiHTML = `
     <div id="ds_cache_ui_box" class="extension_settings_block">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>DeepSeek 終極快取架構 V6</b>
+                <b>DeepSeek 原生快取架構 V7</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content" style="padding-top:10px;">
                 <label class="checkbox_label">
                     <input type="checkbox" id="ds_cache_enable" ${settings.enabled ? 'checked' : ''}>
-                    <span>啟用全維度三重攔截引擎</span>
+                    <span>啟用原生事件陣列重組</span>
                 </label>
                 <hr class="sysdef_hr">
                 <div>
                     <label>滑動緩衝區塊大小 (Chunk Size):</label>
                     <input type="number" id="ds_chunk_size" class="text_pole" min="2" max="30" value="${settings.chunkSize}" style="width:60px; margin-left:10px;">
+                    <br><small style="color:var(--SmartThemeBodyColor);">超前丟棄舊訊息數，保證前綴鎖死。</small>
                 </div>
                 <div style="margin-top: 10px;">
-                    <button id="ds_reset_btn" class="menu_button">強制重置快取狀態 (手動刪除歷史後點擊)</button>
+                    <button id="ds_reset_btn" class="menu_button">強制重置快取狀態</button>
                 </div>
             </div>
         </div>
@@ -124,31 +121,31 @@ function injectUI() {
 // ==========================================
 function optimizeMessages(messages) {
     if (!settings.enabled || messages.length < 3) return messages;
-    
-    // 防無限迴圈
     if (messages[OPTIMIZED_FLAG]) return messages;
 
-    console.log(`\n--- [DS-Cache-Opt] 🧠 開始 V6 重組 (原長度: ${messages.length}) ---`);
+    console.log(`\n--- [DS-Cache-Opt] 🧠 開始 V7 重組 (原長度: ${messages.length}) ---`);
 
     let sysTop = [];
     let historyAll = [];
     let sysBottom = [];
-    let latestMsg = messages[messages.length - 1]; // 無論是 User 還是 System，保留最後一條不動
+    let latestMsg = messages[messages.length - 1]; // 保留最後一條不動 (通常是使用者輸入)
 
+    // 1. 分離陣列：最頂端的 System -> 歷史 -> 中間的世界書 System
     let foundFirstUser = false;
     for (let i = 0; i < messages.length - 1; i++) {
         let msg = messages[i];
         if (msg.role !== 'system') foundFirstUser = true;
 
         if (!foundFirstUser && msg.role === 'system') {
-            sysTop.push(msg);
+            sysTop.push(msg); // Main Prompt
         } else if (msg.role === 'system') {
-            sysBottom.push(msg);
+            sysBottom.push(msg); // Lorebooks / Authors Note
         } else {
-            historyAll.push(msg);
+            historyAll.push(msg); // History + Examples
         }
     }
 
+    // 2. 對話狀態錨點偵測
     let currentChatId = sysTop.length > 0 ? getAnchorKey(sysTop, 0) : 'default';
     if (!cacheState.isInitialized || cacheState.chatId !== currentChatId) {
         cacheState.chatId = currentChatId;
@@ -158,6 +155,7 @@ function optimizeMessages(messages) {
         cacheState.anchorKey = getAnchorKey(historyAll, cacheState.exampleCount);
     }
 
+    // 3. 切塊演算法 (Chunking)
     if (historyAll.length > cacheState.exampleCount) {
         let examples = historyAll.slice(0, cacheState.exampleCount);
         let realHistory = historyAll.slice(cacheState.exampleCount);
@@ -187,6 +185,7 @@ function optimizeMessages(messages) {
         historyAll = [...examples, ...realHistory];
     }
 
+    // 4. 重組為完美結構
     let optimized = [...sysTop, ...historyAll];
     if (sysBottom.length > 0) {
         let combined = sysBottom.map(m => safeGetText(m)).join("\n\n---\n\n");
@@ -195,7 +194,7 @@ function optimizeMessages(messages) {
     }
     optimized.push(latestMsg);
 
-    // 打上防呆標記
+    // 打上不可見的標記，防止 ST 內部重複處理
     Object.defineProperty(optimized, OPTIMIZED_FLAG, { value: true, enumerable: false });
 
     console.log(`[DS-Cache-Opt] ✅ 陣列重組完成！(輸出長度: ${optimized.length})`);
@@ -204,112 +203,47 @@ function optimizeMessages(messages) {
 }
 
 // ==========================================
-// 4. 第一重攔截：ST 記憶體原生攔截 (UI 同步)
+// 4. 絕對安全的 ST 原生事件攔截
 // ==========================================
-async function hookSillyTavernNative() {
-    console.log("[DS-Cache-Opt] 🛡️ [4/7] 嘗試註冊記憶體攔截器...");
-    try {
-        const stModule = await import('../../../../script.js');
-        if (stModule && stModule.eventSource) {
-            stModule.eventSource.on('before_api_request', (eventArgs) => {
-                if (!settings.enabled) return;
-                if (eventArgs && eventArgs.request && eventArgs.request.messages) {
-                    console.log("[DS-Cache-Opt] 💡 觸發原生記憶體攔截 (ST 介面將同步顯示正確長度)！");
-                    eventArgs.request.messages = optimizeMessages(eventArgs.request.messages);
+function setupNativeHook() {
+    console.log("[DS-Cache-Opt] 🛡️ [4/4] 綁定 ST 原生 Prompt 事件...");
+    
+    let eventSource = null;
+    if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
+        eventSource = SillyTavern.getContext().eventSource;
+    }
+    if (!eventSource && typeof window.eventSource !== 'undefined') {
+        eventSource = window.eventSource;
+    }
+
+    if (eventSource && typeof eventSource.on === 'function') {
+        eventSource.on('before_api_request', (eventArgs) => {
+            if (!settings.enabled) return;
+            try {
+                if (eventArgs && eventArgs.request && Array.isArray(eventArgs.request.messages)) {
+                    console.log("[DS-Cache-Opt] 💡 捕捉到 ST 原生事件，執行陣列替換...");
+                    
+                    // 執行重組，並直接覆寫記憶體中的陣列
+                    let newMessages = optimizeMessages(eventArgs.request.messages);
+                    
+                    // 清空原本的陣列，再將新陣列塞回去，確保記憶體指標更新
+                    eventArgs.request.messages.length = 0;
+                    eventArgs.request.messages.push(...newMessages);
+                    
+                    // 再次打上標記
+                    Object.defineProperty(eventArgs.request.messages, OPTIMIZED_FLAG, { value: true, enumerable: false });
                 }
-            });
-            console.log("[DS-Cache-Opt] ✅ 記憶體攔截成功！");
-        }
-    } catch (e) {
-        console.warn("[DS-Cache-Opt] ⚠️ 無法匯入 script.js，依賴底層網路攔截。");
+            } catch (e) {
+                console.error("[DS-Cache-Opt] ❌ 陣列替換失敗:", e);
+            }
+        });
+        console.log("[DS-Cache-Opt] 🎉 系統就緒！快取引擎已與 SillyTavern 核心完美融合。");
+    } else {
+        console.error("[DS-Cache-Opt] ❌ 無法找到 eventSource，請更新 SillyTavern。");
     }
 }
 
-// 深度遍歷 Payload 強制替換
-function deepReplacePayload(obj) {
-    let modified = false;
-    if (obj && obj.messages && Array.isArray(obj.messages) && !obj.messages[OPTIMIZED_FLAG]) {
-        obj.messages = optimizeMessages(obj.messages);
-        modified = true;
-    }
-    if (obj && obj.body && typeof obj.body === 'object') {
-        if (deepReplacePayload(obj.body)) modified = true;
-    } else if (obj && obj.body && typeof obj.body === 'string') {
-        try {
-            let inner = JSON.parse(obj.body);
-            if (inner.messages && Array.isArray(inner.messages) && !inner.messages[OPTIMIZED_FLAG]) {
-                inner.messages = optimizeMessages(inner.messages);
-                obj.body = JSON.stringify(inner);
-                modified = true;
-            }
-        } catch(e) {}
-    }
-    return modified;
-}
-
-// ==========================================
-// 5. 第二重攔截：XHR 底層劫持
-// ==========================================
-function setupXHRHijack() {
-    console.log("[DS-Cache-Opt] 🛡️ [5/7] 注入 XHR 底層攔截器...");
-    const originalXHRSend = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.send = function(body) {
-        try {
-            if (typeof body === 'string' && this._url && (this._url.includes('/generate') || this._url.includes('api.'))) {
-                let parsed = JSON.parse(body);
-                if (deepReplacePayload(parsed)) {
-                    body = JSON.stringify(parsed);
-                    console.log("[DS-Cache-Opt] 📤 XHR 網路層絕對覆寫成功！");
-                }
-            }
-        } catch(e) {}
-        return originalXHRSend.call(this, body);
-    };
-    const originalXHROpen = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function(method, url) {
-        this._url = typeof url === 'string' ? url : url.href;
-        return originalXHROpen.apply(this, arguments);
-    };
-}
-
-// ==========================================
-// 6. 第三重攔截：Fetch 終極劫持 (解鎖 Request 限制)
-// ==========================================
-function setupFetchHijack() {
-    console.log("[DS-Cache-Opt] 🛡️ [6/7] 注入 Fetch 底層攔截器...");
-    const originalFetch = window.fetch;
-    window.fetch = async function(...args) {
-        try {
-            let request = args[0];
-            let options = args[1] || {};
-            let url = typeof request === 'string' ? request : (request.url || '');
-
-            // 破解 Request 物件的唯讀限制
-            if (request instanceof Request && request.method === 'POST') {
-                options.method = 'POST';
-                options.headers = {};
-                request.headers.forEach((val, key) => options.headers[key] = val);
-                options.body = await request.clone().text();
-                args[0] = url; // 降級回字串以允許修改 options
-            }
-
-            if (options.method === 'POST' && typeof options.body === 'string') {
-                if (url.includes('/generate') || url.includes('/chat/completions') || url.includes('api.')) {
-                    let parsed = JSON.parse(options.body);
-                    if (deepReplacePayload(parsed)) {
-                        options.body = JSON.stringify(parsed);
-                        args[1] = options; 
-                        console.log("[DS-Cache-Opt] 📤 Fetch 網路層絕對覆寫成功！");
-                    }
-                }
-            }
-            return originalFetch.apply(this, args);
-        } catch (err) {
-            console.error("[DS-Cache-Opt] ❌ Fetch 攔截錯誤:", err);
-            return originalFetch.apply(this, args);
-        }
-    };
-    console.log("[DS-Cache-Opt] 🎉 [7/7] 全系統防禦部署完畢！");
-}
-
-setTimeout(init, 500);
+// 使用 jQuery 保證 DOM 完全載入後再啟動
+jQuery(() => {
+    setTimeout(init, 500);
+});
