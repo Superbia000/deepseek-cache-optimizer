@@ -1,9 +1,9 @@
 console.log("==================================================");
-console.log("[DS-Cache-Opt] 🚀 [1/7] V5.2 三重攔截快取架構啟動中...");
+console.log("[DS-Cache-Opt] 🚀 [1/7] V6.0 絕對零度快取防禦啟動...");
 console.log("==================================================");
 
 const EXTENSION_NAME = "deepseek-cache-optimizer";
-const OPTIMIZED_FLAG = "_ds_optimized_v5"; // 防重複處理標籤
+const OPTIMIZED_FLAG = "_ds_optimized_v6";
 
 const defaultSettings = { enabled: true, chunkSize: 10 };
 let settings = { ...defaultSettings };
@@ -17,7 +17,7 @@ let cacheState = {
 };
 
 // ==========================================
-// 1. 安全初始化模組
+// 1. 安全初始化與全域設定
 // ==========================================
 async function init() {
     console.log("[DS-Cache-Opt] ⏳ [2/7] 載入設定檔...");
@@ -35,54 +35,59 @@ async function init() {
     if (settings.enabled !== false) settings.enabled = true;
     settings.chunkSize = parseInt(settings.chunkSize) || 10;
     
-    console.log("[DS-Cache-Opt] ⚙️ [3/7] 當前設定:", settings);
     injectUI();
-    setupNativeHook();
-    setupFetchHijack();
+    await hookSillyTavernNative(); // 第一重：記憶體攔截
+    setupXHRHijack();              // 第二重：XHR 攔截
+    setupFetchHijack();            // 第三重：Fetch 攔截
 }
 
 function safeSaveSettings() {
     if (ST_extension_settings) ST_extension_settings[EXTENSION_NAME] = settings;
-    if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
-        let context = SillyTavern.getContext();
-        if (typeof context.saveSettingsDebounced === 'function') {
-            context.saveSettingsDebounced(); return;
-        }
-    }
     if (typeof window.saveSettingsDebounced === 'function') window.saveSettingsDebounced();
 }
 
+// 防崩潰：安全提取訊息內容 (解決多模態或陣列導致的崩潰)
+function safeGetText(msg) {
+    if (!msg || !msg.content) return "";
+    if (typeof msg.content === 'string') return msg.content;
+    if (Array.isArray(msg.content)) {
+        let txtPart = msg.content.find(c => c.type === 'text');
+        return txtPart && txtPart.text ? txtPart.text : "[Media]";
+    }
+    return String(msg.content);
+}
+
+// 產生防呆特徵金鑰
 function getAnchorKey(chatArray, index) {
     if (index >= chatArray.length) return null;
-    let key = `${chatArray[index].role}::${chatArray[index].content.substring(0, 50)}`;
+    let key = `${chatArray[index].role}::${safeGetText(chatArray[index]).substring(0, 50)}`;
     if (index + 1 < chatArray.length) {
-        key += `||${chatArray[index+1].role}::${chatArray[index+1].content.substring(0, 50)}`;
+        key += `||${chatArray[index+1].role}::${safeGetText(chatArray[index+1]).substring(0, 50)}`;
     }
     return key;
 }
 
 // ==========================================
-// 2. 原生無特效 UI 注入
+// 2. 原生風格 UI 注入
 // ==========================================
 function injectUI() {
-    console.log("[DS-Cache-Opt] ⏳ [4/7] 注入原生風格 UI...");
+    console.log("[DS-Cache-Opt] ⏳ [3/7] 注入原生 UI...");
     const uiHTML = `
     <div id="ds_cache_ui_box" class="extension_settings_block">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>DeepSeek 快取架構 V5.2</b>
+                <b>DeepSeek 終極快取架構 V6</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content" style="padding-top:10px;">
                 <label class="checkbox_label">
                     <input type="checkbox" id="ds_cache_enable" ${settings.enabled ? 'checked' : ''}>
-                    <span>啟用三重攔截快取引擎</span>
+                    <span>啟用全維度三重攔截引擎</span>
                 </label>
                 <hr class="sysdef_hr">
                 <div>
                     <label>滑動緩衝區塊大小 (Chunk Size):</label>
                     <input type="number" id="ds_chunk_size" class="text_pole" min="2" max="30" value="${settings.chunkSize}" style="width:60px; margin-left:10px;">
-                    <br><small style="color:var(--SmartThemeBodyColor);">ST 上下文達到上限時，一次超前丟棄 N 條舊訊息，保證前綴鎖死。</small>
                 </div>
                 <div style="margin-top: 10px;">
                     <button id="ds_reset_btn" class="menu_button">強制重置快取狀態 (手動刪除歷史後點擊)</button>
@@ -95,7 +100,6 @@ function injectUI() {
     if ($('#extensions_settings').length > 0) {
         if ($('#ds_cache_ui_box').length === 0) {
             $('#extensions_settings').append(uiHTML);
-            
             $('#ds_cache_enable').on('change', function() {
                 settings.enabled = !!$(this).prop('checked');
                 if (settings.enabled) cacheState.isInitialized = false; 
@@ -107,7 +111,7 @@ function injectUI() {
             });
             $('#ds_reset_btn').on('click', function() {
                 cacheState.isInitialized = false;
-                alert("DeepSeek 快取狀態已重置。下一句將建立新的快取基準。");
+                alert("狀態已重置。");
             });
         }
     } else {
@@ -116,23 +120,20 @@ function injectUI() {
 }
 
 // ==========================================
-// 3. 核心重組邏輯 (具備防重複處理機制)
+// 3. 核心零缺陷重組邏輯
 // ==========================================
 function optimizeMessages(messages) {
     if (!settings.enabled || messages.length < 3) return messages;
     
-    // 防呆機制：如果已經被最佳化過，直接跳過，避免無限迴圈
-    if (messages[OPTIMIZED_FLAG]) {
-        console.log(`[DS-Cache-Opt] ⏭️ 偵測到已處理過的陣列，安全放行。`);
-        return messages;
-    }
+    // 防無限迴圈
+    if (messages[OPTIMIZED_FLAG]) return messages;
 
-    console.log(`\n--- [DS-Cache-Opt] 🧠 開始 V5.2 陣列重組 (原長度: ${messages.length}) ---`);
+    console.log(`\n--- [DS-Cache-Opt] 🧠 開始 V6 重組 (原長度: ${messages.length}) ---`);
 
     let sysTop = [];
     let historyAll = [];
     let sysBottom = [];
-    let latestUser = messages[messages.length - 1];
+    let latestMsg = messages[messages.length - 1]; // 無論是 User 還是 System，保留最後一條不動
 
     let foundFirstUser = false;
     for (let i = 0; i < messages.length - 1; i++) {
@@ -150,16 +151,11 @@ function optimizeMessages(messages) {
 
     let currentChatId = sysTop.length > 0 ? getAnchorKey(sysTop, 0) : 'default';
     if (!cacheState.isInitialized || cacheState.chatId !== currentChatId) {
-        console.log(`[DS-Cache-Opt] 🆕 建立初始快取基準...`);
         cacheState.chatId = currentChatId;
         cacheState.isInitialized = true;
-        
         let firstRealUserIndex = historyAll.findIndex(m => m.role === 'user');
         cacheState.exampleCount = firstRealUserIndex > 0 ? firstRealUserIndex : 0;
-        
-        let anchorIdx = cacheState.exampleCount;
-        cacheState.anchorKey = getAnchorKey(historyAll, anchorIdx);
-        console.log(`[DS-Cache-Opt] 基準完成！保護了 ${cacheState.exampleCount} 條範例對話。`);
+        cacheState.anchorKey = getAnchorKey(historyAll, cacheState.exampleCount);
     }
 
     if (historyAll.length > cacheState.exampleCount) {
@@ -183,7 +179,7 @@ function optimizeMessages(messages) {
             if (realHistory.length > chunk + 2) {
                 realHistory = realHistory.slice(chunk);
                 cacheState.anchorKey = getAnchorKey(realHistory, 0);
-                console.log(`[DS-Cache-Opt] 🚧 上下文推進，超前剔除 ${chunk} 條建立新護城河。`);
+                console.log(`[DS-Cache-Opt] 🚧 超前剔除 ${chunk} 條建立新護城河。`);
             } else {
                 cacheState.anchorKey = getAnchorKey(realHistory, 0);
             }
@@ -193,13 +189,13 @@ function optimizeMessages(messages) {
 
     let optimized = [...sysTop, ...historyAll];
     if (sysBottom.length > 0) {
-        let combined = sysBottom.map(m => m.content).join("\n\n---\n\n");
+        let combined = sysBottom.map(m => safeGetText(m)).join("\n\n---\n\n");
         optimized.push({ role: 'system', content: combined });
         console.log(`[DS-Cache-Opt] 📦 合併 ${sysBottom.length} 條動態設定並強制置底。`);
     }
-    optimized.push(latestUser);
+    optimized.push(latestMsg);
 
-    // 植入不可見的防呆標籤，保證不會被重複處理
+    // 打上防呆標記
     Object.defineProperty(optimized, OPTIMIZED_FLAG, { value: true, enumerable: false });
 
     console.log(`[DS-Cache-Opt] ✅ 陣列重組完成！(輸出長度: ${optimized.length})`);
@@ -208,61 +204,112 @@ function optimizeMessages(messages) {
 }
 
 // ==========================================
-// 4. 第一重攔截：ST 原生事件 (讓介面同步)
+// 4. 第一重攔截：ST 記憶體原生攔截 (UI 同步)
 // ==========================================
-function setupNativeHook() {
-    console.log("[DS-Cache-Opt] 🛡️ [5/7] 註冊 ST 原生事件攔截器...");
-    if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
-        const ST = SillyTavern.getContext();
-        if (ST.eventSource && typeof ST.eventSource.on === 'function') {
-            ST.eventSource.on('before_api_request', (eventArgs) => {
-                if (settings.enabled && eventArgs && eventArgs.request && eventArgs.request.messages) {
-                    console.log("[DS-Cache-Opt] 💡 觸發 ST 原生攔截，正在更新內部記憶體...");
+async function hookSillyTavernNative() {
+    console.log("[DS-Cache-Opt] 🛡️ [4/7] 嘗試註冊記憶體攔截器...");
+    try {
+        const stModule = await import('../../../../script.js');
+        if (stModule && stModule.eventSource) {
+            stModule.eventSource.on('before_api_request', (eventArgs) => {
+                if (!settings.enabled) return;
+                if (eventArgs && eventArgs.request && eventArgs.request.messages) {
+                    console.log("[DS-Cache-Opt] 💡 觸發原生記憶體攔截 (ST 介面將同步顯示正確長度)！");
                     eventArgs.request.messages = optimizeMessages(eventArgs.request.messages);
                 }
             });
+            console.log("[DS-Cache-Opt] ✅ 記憶體攔截成功！");
         }
+    } catch (e) {
+        console.warn("[DS-Cache-Opt] ⚠️ 無法匯入 script.js，依賴底層網路攔截。");
     }
 }
 
+// 深度遍歷 Payload 強制替換
+function deepReplacePayload(obj) {
+    let modified = false;
+    if (obj && obj.messages && Array.isArray(obj.messages) && !obj.messages[OPTIMIZED_FLAG]) {
+        obj.messages = optimizeMessages(obj.messages);
+        modified = true;
+    }
+    if (obj && obj.body && typeof obj.body === 'object') {
+        if (deepReplacePayload(obj.body)) modified = true;
+    } else if (obj && obj.body && typeof obj.body === 'string') {
+        try {
+            let inner = JSON.parse(obj.body);
+            if (inner.messages && Array.isArray(inner.messages) && !inner.messages[OPTIMIZED_FLAG]) {
+                inner.messages = optimizeMessages(inner.messages);
+                obj.body = JSON.stringify(inner);
+                modified = true;
+            }
+        } catch(e) {}
+    }
+    return modified;
+}
+
 // ==========================================
-// 5. 第二重攔截：Fetch 底層劫持 (防漏網之魚)
+// 5. 第二重攔截：XHR 底層劫持
+// ==========================================
+function setupXHRHijack() {
+    console.log("[DS-Cache-Opt] 🛡️ [5/7] 注入 XHR 底層攔截器...");
+    const originalXHRSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function(body) {
+        try {
+            if (typeof body === 'string' && this._url && (this._url.includes('/generate') || this._url.includes('api.'))) {
+                let parsed = JSON.parse(body);
+                if (deepReplacePayload(parsed)) {
+                    body = JSON.stringify(parsed);
+                    console.log("[DS-Cache-Opt] 📤 XHR 網路層絕對覆寫成功！");
+                }
+            }
+        } catch(e) {}
+        return originalXHRSend.call(this, body);
+    };
+    const originalXHROpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
+        this._url = typeof url === 'string' ? url : url.href;
+        return originalXHROpen.apply(this, arguments);
+    };
+}
+
+// ==========================================
+// 6. 第三重攔截：Fetch 終極劫持 (解鎖 Request 限制)
 // ==========================================
 function setupFetchHijack() {
     console.log("[DS-Cache-Opt] 🛡️ [6/7] 注入 Fetch 底層攔截器...");
     const originalFetch = window.fetch;
-    
     window.fetch = async function(...args) {
-        let resource = args[0];
-        let init = args[1];
+        try {
+            let request = args[0];
+            let options = args[1] || {};
+            let url = typeof request === 'string' ? request : (request.url || '');
 
-        if (init && init.method === 'POST' && typeof init.body === 'string') {
-            let url = typeof resource === 'string' ? resource : (resource && resource.url ? resource.url : '');
-            if (url.includes('/generate') || url.includes('/chat/completions') || url.includes('api.')) {
-                try {
-                    let parsed = JSON.parse(init.body);
-                    let messages = parsed.messages || (parsed.body && parsed.body.messages);
-                    
-                    if (messages && !messages[OPTIMIZED_FLAG]) {
-                        console.log(`[DS-Cache-Opt] 🌐 Fetch 層捕捉到未處理的 Payload，強制介入...`);
-                        let optimized = optimizeMessages(messages);
-                        
-                        if (parsed.messages) parsed.messages = optimized;
-                        if (parsed.body && parsed.body.messages) parsed.body.messages = optimized;
-                        
-                        // 強制覆寫參考，解決嚴格模式下的遺失問題
-                        init.body = JSON.stringify(parsed);
-                        args[1] = init; 
-                        console.log("[DS-Cache-Opt] 📤 網路層 Payload 覆寫成功！");
+            // 破解 Request 物件的唯讀限制
+            if (request instanceof Request && request.method === 'POST') {
+                options.method = 'POST';
+                options.headers = {};
+                request.headers.forEach((val, key) => options.headers[key] = val);
+                options.body = await request.clone().text();
+                args[0] = url; // 降級回字串以允許修改 options
+            }
+
+            if (options.method === 'POST' && typeof options.body === 'string') {
+                if (url.includes('/generate') || url.includes('/chat/completions') || url.includes('api.')) {
+                    let parsed = JSON.parse(options.body);
+                    if (deepReplacePayload(parsed)) {
+                        options.body = JSON.stringify(parsed);
+                        args[1] = options; 
+                        console.log("[DS-Cache-Opt] 📤 Fetch 網路層絕對覆寫成功！");
                     }
-                } catch (e) {
-                    console.error("[DS-Cache-Opt] ❌ Fetch 攔截錯誤:", e);
                 }
             }
+            return originalFetch.apply(this, args);
+        } catch (err) {
+            console.error("[DS-Cache-Opt] ❌ Fetch 攔截錯誤:", err);
+            return originalFetch.apply(this, args);
         }
-        return originalFetch.apply(this, args);
     };
-    console.log("[DS-Cache-Opt] 🎉 [7/7] 初始化流程全部完成！快取引擎正在運作中。");
+    console.log("[DS-Cache-Opt] 🎉 [7/7] 全系統防禦部署完畢！");
 }
 
 setTimeout(init, 500);
