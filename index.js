@@ -1,14 +1,17 @@
 console.log("==================================================");
-console.log("[DS-Cache-Opt] 🚀 [1/3] V8.0 極致相容架構啟動中...");
+console.log("[DS-Cache-Opt] 🚀 [1/4] V9.0 終極防護破壁版啟動中...");
 console.log("==================================================");
 
-// 🚫 絕對禁止使用 import，避免不同 ST 版本的 SyntaxError 崩潰
+// 🚫 嚴禁使用靜態 import，免疫 SyntaxError
+
 const EXTENSION_NAME = "deepseek-cache-optimizer";
+const OPTIMIZED_FLAG = "_ds_optimized_v9";
+
 const defaultSettings = { enabled: true, chunkSize: 10 };
 let settings = { ...defaultSettings };
 let ST_ext_settings_ref = null;
+let ST_eventSource_ref = null;
 
-// 核心狀態機
 let cacheState = {
     chatId: null,
     isInitialized: false,
@@ -17,39 +20,63 @@ let cacheState = {
 };
 
 // ==========================================
-// 1. 動態全域變數尋找與初始化
+// 1. 動態安全模組探測 (破解打包環境限制)
 // ==========================================
-function init() {
-    console.log("[DS-Cache-Opt] ⏳ 正在尋找 ST 全域變數...");
+async function loadSTModules() {
+    console.log("[DS-Cache-Opt] ⏳ [2/4] 啟動多維動態模組探測...");
+    
+    const scriptPaths = ['../../../../script.js', '../../../script.js', './script.js'];
+    const extPaths = ['../../../extensions.js', '../../extensions.js', './extensions.js'];
 
-    // 動態獲取 Context (相容各種 ST 版本)
-    const getCtx = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext : (window.getContext || null);
-    const context = getCtx ? getCtx() : {};
-
-    // 尋找設定檔與事件源
-    let extSettings = context.extension_settings || window.extension_settings;
-    let evSource = context.eventSource || window.eventSource;
-
-    // 如果 ST 還沒載入完畢，延遲 0.5 秒後重試
-    if (!extSettings || !evSource || typeof evSource.on !== 'function') {
-        setTimeout(init, 500);
-        return;
+    // 探測 script.js
+    for (let p of scriptPaths) {
+        try {
+            let mod = await import(p);
+            if (mod.eventSource) ST_eventSource_ref = mod.eventSource;
+            if (mod.extension_settings) ST_ext_settings_ref = mod.extension_settings;
+        } catch(e) { /* 靜默忽略，繼續探測 */ }
+    }
+    // 探測 extensions.js
+    for (let p of extPaths) {
+        try {
+            let mod = await import(p);
+            if (mod.eventSource && !ST_eventSource_ref) ST_eventSource_ref = mod.eventSource;
+            if (mod.extension_settings && !ST_ext_settings_ref) ST_ext_settings_ref = mod.extension_settings;
+        } catch(e) {}
     }
 
-    ST_ext_settings_ref = extSettings;
-    
-    // 初始化設定
+    // 探測全域與 ST Context
+    if (typeof SillyTavern !== 'undefined' && typeof SillyTavern.getContext === 'function') {
+        let ctx = SillyTavern.getContext();
+        if (ctx.eventSource && !ST_eventSource_ref) ST_eventSource_ref = ctx.eventSource;
+        if (ctx.extension_settings && !ST_ext_settings_ref) ST_ext_settings_ref = ctx.extension_settings;
+    }
+    if (!ST_eventSource_ref && window.eventSource) ST_eventSource_ref = window.eventSource;
+    if (!ST_ext_settings_ref && window.extension_settings) ST_ext_settings_ref = window.extension_settings;
+
+    if (!ST_ext_settings_ref) ST_ext_settings_ref = {}; // 終極保底記憶體
+}
+
+async function init() {
+    await loadSTModules();
+
     if (!ST_ext_settings_ref[EXTENSION_NAME]) {
         ST_ext_settings_ref[EXTENSION_NAME] = { ...defaultSettings };
     }
     settings = Object.assign({}, defaultSettings, ST_ext_settings_ref[EXTENSION_NAME]);
     if (settings.enabled !== false) settings.enabled = true;
 
-    console.log("[DS-Cache-Opt] ⚙️ [2/3] 當前設定檔:", settings);
+    console.log("[DS-Cache-Opt] ⚙️ [3/4] 當前設定檔:", settings);
 
-    // 啟動功能
     injectUI();
-    registerHook(evSource);
+    
+    if (ST_eventSource_ref && typeof ST_eventSource_ref.on === 'function') {
+        registerNativeHook();
+    } else {
+        console.warn("[DS-Cache-Opt] ⚠️ 未能找到內部 eventSource (打包版限制)。將完全依賴無損 Fetch 攔截器。");
+    }
+    
+    setupFetchHijack();
 }
 
 function safeSaveSettings() {
@@ -73,7 +100,6 @@ function safeGetText(msg) {
     return String(msg.content);
 }
 
-// 產生複合防呆特徵金鑰
 function getAnchorKey(chatArray, index) {
     if (index >= chatArray.length) return null;
     let key = `${chatArray[index].role}::${safeGetText(chatArray[index]).substring(0, 50)}`;
@@ -91,22 +117,21 @@ function injectUI() {
     <div id="ds_cache_ui_box" class="extension_settings_block">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>DeepSeek 原生快取架構 V8.0</b>
+                <b>DeepSeek 快取破壁架構 V9</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content" style="padding-top:10px;">
                 <label class="checkbox_label">
                     <input type="checkbox" id="ds_cache_enable" ${settings.enabled ? 'checked' : ''}>
-                    <span>啟用原生事件攔截引擎</span>
+                    <span>啟用全維度同步攔截引擎</span>
                 </label>
                 <hr class="sysdef_hr">
                 <div>
                     <label>滑動緩衝區塊大小 (Chunk Size):</label>
                     <input type="number" id="ds_chunk_size" class="text_pole" min="2" max="30" value="${settings.chunkSize}" style="width:60px; margin-left:10px;">
-                    <br><small style="color:var(--SmartThemeBodyColor);">當 ST 刪除舊訊息時，超前丟棄 N 條以保證前綴靜止。</small>
                 </div>
                 <div style="margin-top: 10px;">
-                    <button id="ds_reset_btn" class="menu_button">強制重置快取狀態 (手動刪除歷史後點擊)</button>
+                    <button id="ds_reset_btn" class="menu_button">強制重置快取狀態</button>
                 </div>
             </div>
         </div>
@@ -140,6 +165,7 @@ function injectUI() {
 // ==========================================
 function optimizeMessages(messages) {
     if (!settings.enabled || messages.length < 3) return messages;
+    if (messages[OPTIMIZED_FLAG]) return messages; // 防重複處理
 
     console.log(`\n--- [DS-Cache-Opt] 🧠 開始陣列重組 (原長度: ${messages.length}) ---`);
 
@@ -162,7 +188,6 @@ function optimizeMessages(messages) {
         }
     }
 
-    // 對話切換與初始化基準
     let currentChatId = sysTop.length > 0 ? getAnchorKey(sysTop, 0) : 'default';
     if (!cacheState.isInitialized || cacheState.chatId !== currentChatId) {
         cacheState.chatId = currentChatId;
@@ -187,7 +212,7 @@ function optimizeMessages(messages) {
 
         if (anchorIndex !== -1) {
             realHistory = realHistory.slice(anchorIndex);
-            console.log(`[DS-Cache-Opt] 🎯 複合錨點命中！(Index: ${anchorIndex})，前綴完美鎖定。`);
+            console.log(`[DS-Cache-Opt] 🎯 複合錨點命中！(Index: ${anchorIndex})`);
         } else {
             let chunk = settings.chunkSize || 10;
             if (realHistory.length > chunk + 2) {
@@ -201,7 +226,6 @@ function optimizeMessages(messages) {
         historyAll = [...examples, ...realHistory];
     }
 
-    // 重組並置底
     let optimized = [...sysTop, ...historyAll];
     if (sysBottom.length > 0) {
         let combined = sysBottom.map(m => safeGetText(m)).join("\n\n---\n\n");
@@ -210,6 +234,8 @@ function optimizeMessages(messages) {
     }
     optimized.push(latestMsg);
 
+    Object.defineProperty(optimized, OPTIMIZED_FLAG, { value: true, enumerable: false });
+
     console.log(`[DS-Cache-Opt] ✅ 陣列重組完成！(輸出長度: ${optimized.length})`);
     console.log(`--- [DS-Cache-Opt] 結束 ---\n`);
     
@@ -217,16 +243,63 @@ function optimizeMessages(messages) {
 }
 
 // ==========================================
-// 4. 註冊 ST 原生 API 攔截事件
+// 4. 雙重攔截引擎
 // ==========================================
-function registerHook(evSource) {
-    evSource.on('before_api_request', (requestData) => {
+function registerNativeHook() {
+    ST_eventSource_ref.on('before_api_request', (requestData) => {
         if (settings.enabled && requestData && Array.isArray(requestData.messages)) {
             requestData.messages = optimizeMessages(requestData.messages);
+            console.log("[DS-Cache-Opt] 💡 記憶體層攔截成功，UI 已同步。");
         }
     });
-    console.log("[DS-Cache-Opt] 🎉 [3/3] 原生事件攔截註冊成功！系統完美運作中。");
 }
 
-// 延遲啟動以確保 ST 環境已準備完畢
+function deepReplacePayload(obj) {
+    let modified = false;
+    if (obj && obj.messages && Array.isArray(obj.messages) && !obj.messages[OPTIMIZED_FLAG]) {
+        obj.messages = optimizeMessages(obj.messages);
+        modified = true;
+    }
+    if (obj && obj.body && typeof obj.body === 'object') {
+        if (deepReplacePayload(obj.body)) modified = true;
+    } else if (obj && obj.body && typeof obj.body === 'string') {
+        try {
+            let inner = JSON.parse(obj.body);
+            if (inner.messages && Array.isArray(inner.messages) && !inner.messages[OPTIMIZED_FLAG]) {
+                inner.messages = optimizeMessages(inner.messages);
+                obj.body = JSON.stringify(inner);
+                modified = true;
+            }
+        } catch(e) {}
+    }
+    return modified;
+}
+
+function setupFetchHijack() {
+    console.log("[DS-Cache-Opt] 🛡️ [4/4] 注入 Fetch 同步無損網路攔截器...");
+    const originalFetch = window.fetch;
+    window.fetch = function(...args) { // 移除 async，保證 100% 同步執行不干擾 Abort
+        try {
+            let request = args[0];
+            let options = args[1] || {};
+            let url = typeof request === 'string' ? request : (request.url || '');
+
+            if (options.method === 'POST' && typeof options.body === 'string') {
+                if (url.includes('/generate') || url.includes('/chat/completions') || url.includes('api.')) {
+                    let parsed = JSON.parse(options.body);
+                    if (deepReplacePayload(parsed)) {
+                        options.body = JSON.stringify(parsed);
+                        args[1] = options;
+                        console.log("[DS-Cache-Opt] 📤 網路層同步 Payload 覆寫成功！(無懼 AbortError)");
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("[DS-Cache-Opt] ❌ Fetch 攔截處理失敗:", err);
+        }
+        return originalFetch.apply(this, args);
+    };
+    console.log("[DS-Cache-Opt] 🎉 全系統防禦部署完畢！");
+}
+
 setTimeout(init, 500);
