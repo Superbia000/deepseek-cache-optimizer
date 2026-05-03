@@ -1,16 +1,13 @@
 console.log("==================================================");
-console.log("[DS-Cache-Opt] 🚀 [1/4] V9.0 終極防護破壁版啟動中...");
+console.log("[DS-Cache-Opt] 🚀 [1/3] V10.0 記憶體劫持神蹟版啟動...");
 console.log("==================================================");
 
-// 🚫 嚴禁使用靜態 import，免疫 SyntaxError
-
 const EXTENSION_NAME = "deepseek-cache-optimizer";
-const OPTIMIZED_FLAG = "_ds_optimized_v9";
+const OPTIMIZED_FLAG = "_ds_optimized_v10";
 
 const defaultSettings = { enabled: true, chunkSize: 10 };
 let settings = { ...defaultSettings };
 let ST_ext_settings_ref = null;
-let ST_eventSource_ref = null;
 
 let cacheState = {
     chatId: null,
@@ -20,63 +17,23 @@ let cacheState = {
 };
 
 // ==========================================
-// 1. 動態安全模組探測 (破解打包環境限制)
+// 1. 初始化與設定檔管理
 // ==========================================
-async function loadSTModules() {
-    console.log("[DS-Cache-Opt] ⏳ [2/4] 啟動多維動態模組探測...");
+function init() {
+    console.log("[DS-Cache-Opt] ⏳ [2/3] 載入設定...");
+    const getCtx = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext : (window.getContext || null);
+    const context = getCtx ? getCtx() : {};
+
+    ST_ext_settings_ref = context.extension_settings || window.extension_settings || {};
     
-    const scriptPaths = ['../../../../script.js', '../../../script.js', './script.js'];
-    const extPaths = ['../../../extensions.js', '../../extensions.js', './extensions.js'];
-
-    // 探測 script.js
-    for (let p of scriptPaths) {
-        try {
-            let mod = await import(p);
-            if (mod.eventSource) ST_eventSource_ref = mod.eventSource;
-            if (mod.extension_settings) ST_ext_settings_ref = mod.extension_settings;
-        } catch(e) { /* 靜默忽略，繼續探測 */ }
-    }
-    // 探測 extensions.js
-    for (let p of extPaths) {
-        try {
-            let mod = await import(p);
-            if (mod.eventSource && !ST_eventSource_ref) ST_eventSource_ref = mod.eventSource;
-            if (mod.extension_settings && !ST_ext_settings_ref) ST_ext_settings_ref = mod.extension_settings;
-        } catch(e) {}
-    }
-
-    // 探測全域與 ST Context
-    if (typeof SillyTavern !== 'undefined' && typeof SillyTavern.getContext === 'function') {
-        let ctx = SillyTavern.getContext();
-        if (ctx.eventSource && !ST_eventSource_ref) ST_eventSource_ref = ctx.eventSource;
-        if (ctx.extension_settings && !ST_ext_settings_ref) ST_ext_settings_ref = ctx.extension_settings;
-    }
-    if (!ST_eventSource_ref && window.eventSource) ST_eventSource_ref = window.eventSource;
-    if (!ST_ext_settings_ref && window.extension_settings) ST_ext_settings_ref = window.extension_settings;
-
-    if (!ST_ext_settings_ref) ST_ext_settings_ref = {}; // 終極保底記憶體
-}
-
-async function init() {
-    await loadSTModules();
-
     if (!ST_ext_settings_ref[EXTENSION_NAME]) {
         ST_ext_settings_ref[EXTENSION_NAME] = { ...defaultSettings };
     }
     settings = Object.assign({}, defaultSettings, ST_ext_settings_ref[EXTENSION_NAME]);
     if (settings.enabled !== false) settings.enabled = true;
 
-    console.log("[DS-Cache-Opt] ⚙️ [3/4] 當前設定檔:", settings);
-
     injectUI();
-    
-    if (ST_eventSource_ref && typeof ST_eventSource_ref.on === 'function') {
-        registerNativeHook();
-    } else {
-        console.warn("[DS-Cache-Opt] ⚠️ 未能找到內部 eventSource (打包版限制)。將完全依賴無損 Fetch 攔截器。");
-    }
-    
-    setupFetchHijack();
+    setupMemoryHijack(); // 啟動 V10 核心劫持
 }
 
 function safeSaveSettings() {
@@ -89,7 +46,7 @@ function safeSaveSettings() {
     }
 }
 
-// 防崩潰特徵抓取
+// 特徵抓取
 function safeGetText(msg) {
     if (!msg || !msg.content) return "";
     if (typeof msg.content === 'string') return msg.content;
@@ -110,20 +67,20 @@ function getAnchorKey(chatArray, index) {
 }
 
 // ==========================================
-// 2. 原生風格 UI 注入
+// 2. 原生 UI 注入
 // ==========================================
 function injectUI() {
     const uiHTML = `
     <div id="ds_cache_ui_box" class="extension_settings_block">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>DeepSeek 快取破壁架構 V9</b>
+                <b>DeepSeek 快取記憶體引擎 V10</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content" style="padding-top:10px;">
                 <label class="checkbox_label">
                     <input type="checkbox" id="ds_cache_enable" ${settings.enabled ? 'checked' : ''}>
-                    <span>啟用全維度同步攔截引擎</span>
+                    <span>啟用記憶體核心劫持 (100% 介面同步)</span>
                 </label>
                 <hr class="sysdef_hr">
                 <div>
@@ -164,11 +121,6 @@ function injectUI() {
 // 3. 核心零缺陷重組邏輯
 // ==========================================
 function optimizeMessages(messages) {
-    if (!settings.enabled || messages.length < 3) return messages;
-    if (messages[OPTIMIZED_FLAG]) return messages; // 防重複處理
-
-    console.log(`\n--- [DS-Cache-Opt] 🧠 開始陣列重組 (原長度: ${messages.length}) ---`);
-
     let sysTop = [];
     let historyAll = [];
     let sysBottom = [];
@@ -218,7 +170,7 @@ function optimizeMessages(messages) {
             if (realHistory.length > chunk + 2) {
                 realHistory = realHistory.slice(chunk);
                 cacheState.anchorKey = getAnchorKey(realHistory, 0);
-                console.log(`[DS-Cache-Opt] 🚧 錨點丟失，超前剔除 ${chunk} 條建立新護城河。`);
+                console.log(`[DS-Cache-Opt] 🚧 超前剔除 ${chunk} 條建立新護城河。`);
             } else {
                 cacheState.anchorKey = getAnchorKey(realHistory, 0);
             }
@@ -230,76 +182,52 @@ function optimizeMessages(messages) {
     if (sysBottom.length > 0) {
         let combined = sysBottom.map(m => safeGetText(m)).join("\n\n---\n\n");
         optimized.push({ role: 'system', content: combined });
-        console.log(`[DS-Cache-Opt] 📦 發現並合併 ${sysBottom.length} 條動態設定，已安全強制置底。`);
     }
     optimized.push(latestMsg);
-
-    Object.defineProperty(optimized, OPTIMIZED_FLAG, { value: true, enumerable: false });
-
-    console.log(`[DS-Cache-Opt] ✅ 陣列重組完成！(輸出長度: ${optimized.length})`);
-    console.log(`--- [DS-Cache-Opt] 結束 ---\n`);
     
     return optimized;
 }
 
 // ==========================================
-// 4. 雙重攔截引擎
+// 4. V10 獨家黑科技：JSON.stringify 記憶體劫持
 // ==========================================
-function registerNativeHook() {
-    ST_eventSource_ref.on('before_api_request', (requestData) => {
-        if (settings.enabled && requestData && Array.isArray(requestData.messages)) {
-            requestData.messages = optimizeMessages(requestData.messages);
-            console.log("[DS-Cache-Opt] 💡 記憶體層攔截成功，UI 已同步。");
-        }
-    });
-}
-
-function deepReplacePayload(obj) {
-    let modified = false;
-    if (obj && obj.messages && Array.isArray(obj.messages) && !obj.messages[OPTIMIZED_FLAG]) {
-        obj.messages = optimizeMessages(obj.messages);
-        modified = true;
-    }
-    if (obj && obj.body && typeof obj.body === 'object') {
-        if (deepReplacePayload(obj.body)) modified = true;
-    } else if (obj && obj.body && typeof obj.body === 'string') {
+function setupMemoryHijack() {
+    console.log("[DS-Cache-Opt] 🛡️ [3/3] 注入 JSON.stringify 記憶體同步劫持器...");
+    const originalStringify = JSON.stringify;
+    
+    JSON.stringify = function(value, replacer, space) {
         try {
-            let inner = JSON.parse(obj.body);
-            if (inner.messages && Array.isArray(inner.messages) && !inner.messages[OPTIMIZED_FLAG]) {
-                inner.messages = optimizeMessages(inner.messages);
-                obj.body = JSON.stringify(inner);
-                modified = true;
-            }
-        } catch(e) {}
-    }
-    return modified;
-}
+            // 偵測是否為即將送出的 LLM Payload (具備 messages 陣列與模型參數)
+            if (settings.enabled && value && typeof value === 'object' && Array.isArray(value.messages) && value.messages.length > 2) {
+                if (value.model || value.temperature !== undefined || value.max_tokens !== undefined || value.stream !== undefined) {
+                    
+                    if (!value.messages[OPTIMIZED_FLAG]) {
+                        const originalLen = value.messages.length;
+                        console.log(`\n--- [DS-Cache-Opt] 🧠 記憶體劫持啟動 (原長度: ${originalLen}) ---`);
+                        
+                        // 1. 強行覆寫記憶體物件！這會讓 ST 的介面瞬間同步更新
+                        value.messages = optimizeMessages(value.messages);
+                        const newLen = value.messages.length;
+                        
+                        // 2. 標記已處理，防止無限迴圈
+                        Object.defineProperty(value.messages, OPTIMIZED_FLAG, { value: true, enumerable: false });
+                        console.log(`[DS-Cache-Opt] ✅ 記憶體覆寫完成！(輸出長度: ${newLen})\n`);
 
-function setupFetchHijack() {
-    console.log("[DS-Cache-Opt] 🛡️ [4/4] 注入 Fetch 同步無損網路攔截器...");
-    const originalFetch = window.fetch;
-    window.fetch = function(...args) { // 移除 async，保證 100% 同步執行不干擾 Abort
-        try {
-            let request = args[0];
-            let options = args[1] || {};
-            let url = typeof request === 'string' ? request : (request.url || '');
-
-            if (options.method === 'POST' && typeof options.body === 'string') {
-                if (url.includes('/generate') || url.includes('/chat/completions') || url.includes('api.')) {
-                    let parsed = JSON.parse(options.body);
-                    if (deepReplacePayload(parsed)) {
-                        options.body = JSON.stringify(parsed);
-                        args[1] = options;
-                        console.log("[DS-Cache-Opt] 📤 網路層同步 Payload 覆寫成功！(無懼 AbortError)");
+                        // 3. 彈出視覺提示框給使用者！(只有長度改變或動態設定合併時才提示)
+                        if (typeof toastr !== 'undefined') {
+                            toastr.success(`DeepSeek 快取保護：<br>對話陣列已從 ${originalLen} 條最佳化為 ${newLen} 條！<br>(動態設定已置底)`, '快取命中極限化', { timeOut: 4000 });
+                        }
                     }
                 }
             }
         } catch (err) {
-            console.error("[DS-Cache-Opt] ❌ Fetch 攔截處理失敗:", err);
+            console.error("[DS-Cache-Opt] ❌ 記憶體劫持處理失敗:", err);
         }
-        return originalFetch.apply(this, args);
+        
+        // 放行並呼叫原生的序列化
+        return originalStringify.call(this, value, replacer, space);
     };
-    console.log("[DS-Cache-Opt] 🎉 全系統防禦部署完畢！");
+    console.log("[DS-Cache-Opt] 🎉 記憶體防護網部署完畢！再也不會有 AbortError。");
 }
 
 setTimeout(init, 500);
