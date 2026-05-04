@@ -2,7 +2,7 @@
     "display_name": "Deepseek Cache Optimizer",
     "js": "index.js",
     "author": "AI Assistant",
-    "version": "3.0.0",
-    "description": "Deepseek V3/V4 快取極致優化。採用底層 Stringify 與 Fetch 雙重攔截，完美同步 ST 的 UI 提示詞與實際網路封包，達 100% 命中率。",
+    "version": "4.0.0",
+    "description": "終極覆寫版：直接解析 Fetch 底層字串強制排序，並劫持 ST 原生介面變數，保證 100% 實際修改與緩存命中。",
     "auto_update": true
 }
