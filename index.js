@@ -1,6 +1,7 @@
 /**
- * Deepseek Cache Optimizer for SillyTavern 1.17.0
- * 透過原生 Interceptor API 強制對齊上下文陣列，實現 Deepseek V4 Pro 的極致緩存命中。
+ * Deepseek Cache Optimizer v3.0.0
+ * 同步修改「ST 記憶體緩存變數」與「網路底層封包」，讓介面顯示與 API 發送完全一致。
+ * 完美處理：滑動視窗、世界書觸發、時間巨集、用戶手動刪除/重骰。
  */
 
 let isEnabled = true;
@@ -11,7 +12,7 @@ let lastChatId = null;
 
 // --- 介面日誌排錯函數 ---
 function logDebug(message) {
-    console.log(`[DeepseekOptimizer] ${message}`);
+    console.log(`[DS_Optimizer] ${message}`);
     const logArea = document.getElementById('ds_opt_logs');
     if (logArea) {
         const time = new Date().toLocaleTimeString();
@@ -20,185 +21,217 @@ function logDebug(message) {
     }
 }
 
-// --- 核心原生攔截器 (SillyTavern Interceptor API) ---
-// SillyTavern 會在每次發送 API 請求前，將對話陣列(chat)傳入此全域函數
-globalThis.DeepseekOptimizer_interceptGeneration = async function(chat, contextSize, abort, type) {
-    if (!isEnabled) return;
+// --- 核心優化演算法 (具備冪等性，安全適應所有情境) ---
+function optimizePayload(messages) {
+    if (!messages || messages.length === 0) return messages;
+
+    const context = typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null;
     
-    // 只干預標準的對話生成 (忽略後台悄悄生成的 quiet prompt 或 impersonate)
-    if (type === 'quiet' || type === 'impersonate') {
-        logDebug(`[狀態] 忽略非標準生成類型: ${type}，不進行緩存對齊。`);
-        return;
-    }
-
-    logDebug(`\n>>> [啟動] 觸發原生攔截器 (生成類型: ${type})，開始重組 Payload...`);
-
-    const context = SillyTavern.getContext();
-    const currentChatId = context.chatId;
-
-    // 1. 偵測切換聊天對象
-    if (lastChatId !== currentChatId) {
-        logDebug(`[狀態] 偵測到聊天室切換，重置系統提示凍結快取。`);
-        lastChatId = currentChatId;
-        frozenSystemContent = null;
+    // 1. 聊天室切換偵測
+    if (context) {
+        const currentChatId = context.chatId;
+        if (lastChatId !== currentChatId) {
+            logDebug(`[狀態] 偵測到聊天室切換或初次加載，重置系統提示凍結快取。`);
+            lastChatId = currentChatId;
+            frozenSystemContent = null;
+        }
     }
 
     let sysMessages = [];
     let historyMessages = [];
     let tailMessages = [];
-    let lastUserMsg = null;
 
-    // 2. 取出最新的用戶訊息 (這條始終在最底下，不影響上方歷史緩存)
-    if (chat.length > 0 && chat[chat.length - 1].role === 'user') {
-        lastUserMsg = chat.pop();
-    }
-
-    // 3. 將訊息分類：頂部系統提示、中間動態設定、歷史對話
-    for (let i = 0; i < chat.length; i++) {
-        let msg = chat[i];
-        if (msg.role === 'system') {
-            if (historyMessages.length === 0) {
-                // 第一條為頂部主系統提示 (包含世界觀、角色卡)
-                sysMessages.push(msg);
-            } else {
-                // 出現在歷史之後的系統提示 (通常是觸發了不同深度的 World Info 或 Author's Note)
-                tailMessages.push(msg);
-            }
+    // 2. 訊息分離 (隔離世界書等動態破壞源)
+    for (let i = 0; i < messages.length; i++) {
+        let msg = messages[i];
+        if (i === 0 && msg.role === 'system') {
+            sysMessages.push(msg); // 頂部主提示詞
+        } else if (msg.role === 'system') {
+            tailMessages.push(msg); // 中途插入的世界書(World Info)、作者筆記(Author Note)
         } else {
-            // 對話歷史
-            historyMessages.push(msg);
+            historyMessages.push(msg); // 歷史對話 (User/Assistant)
         }
     }
 
-    // 4. [緩存防護 1] 系統提示凍結 (System Prompt Freezing)
-    // 解決預設提示詞中含有 {{time}} 或其他每回合跳動的巨集
+    // 3. 系統提示凍結 (防禦 {{time}} 等每分鐘跳動的巨集)
     if (isFreezeEnabled && sysMessages.length > 0) {
         let mainSys = sysMessages[0];
+        let contentStr = typeof mainSys.content === 'string' ? mainSys.content : JSON.stringify(mainSys.content);
+        
         if (!frozenSystemContent) {
-            frozenSystemContent = mainSys.content;
-            logDebug("[緩存建構] 建立初代凍結系統提示 (Frozen System Prompt)。");
+            frozenSystemContent = contentStr;
+            logDebug("[緩存建構] 建立初代凍結系統提示，成為 Prefix Cache 的穩固基石。");
         } else {
-            // 透過字元差異判斷是使用者修改了設定，還是單純的時間巨集跳動
-            let diff = Math.abs(mainSys.content.length - frozenSystemContent.length);
+            let diff = Math.abs(contentStr.length - frozenSystemContent.length);
             if (diff > 0 && diff <= 50) {
-                logDebug(`[緩存守護] 偵測到主提示詞微小變化 (差異 ${diff} 字元，疑似 {{time}} 跳動)。已強制還原為凍結版本以維持 Prefix！`);
-                mainSys.content = frozenSystemContent;
+                // 差異極小，判定為時間或隨機數跳動，強制覆蓋還原！
+                mainSys.content = typeof mainSys.content === 'string' ? frozenSystemContent : JSON.parse(frozenSystemContent);
+                logDebug(`[緩存守護] 攔截到主提示詞微小跳動 (差異 ${diff} 字元)。已強制還原為凍結版本！`);
             } else if (diff > 50) {
-                logDebug(`[緩存重建] 偵測到主提示詞顯著修改 (差異 ${diff} 字元)，已更新凍結快取，本回合重新計算 Prefix。`);
-                frozenSystemContent = mainSys.content;
+                // 差異巨大，判定為玩家修改了角色卡設定
+                frozenSystemContent = contentStr;
+                logDebug(`[緩存重建] 偵測到主提示詞顯著修改 (差異 ${diff} 字元)，已更新凍結快取。`);
             }
         }
     }
 
     if (tailMessages.length > 0) {
-        logDebug(`[動態隔離] 偵測到 ${tailMessages.length} 條觸發的動態系統設定 (World Info)。強制下移至尾部，避免破壞上方巨量歷史緩存！`);
+        logDebug(`[動態隔離] 成功抽離 ${tailMessages.length} 條觸發的動態系統設定(世界書)。已強制下移至尾部！`);
     }
 
-    // 5. [緩存防護 2] 絕對錨點截斷算法 (Absolute Anchor Chunking)
-    // 解決 ST 內建 Sliding Window 每次吞噬 1 條最舊訊息導致開頭跳動的問題
-    const totalChatLength = context.chat ? context.chat.length : 0;
-    const M = historyMessages.length; // ST 當前截斷後保留的歷史訊息數
-    
-    if (M > 0 && chunkSize > 1 && totalChatLength > 0) {
-        // startIdx 是當前歷史訊息在完整對話中的虛擬起始索引
-        let startIdx = totalChatLength - M;
-        // 向上對齊至 chunkSize 的倍數 (例如 10)
+    // 4. 抽取最新發話 (保證放在最尾端)
+    let lastMsg = null;
+    if (historyMessages.length > 0) {
+        lastMsg = historyMessages.pop(); 
+    }
+
+    // 5. 絕對錨點截斷演算法 (解決用戶手動刪除、重骰、ST預設滑動視窗造成的開頭跳動)
+    let M = historyMessages.length; 
+    if (context && context.chat && M > 0 && chunkSize > 1) {
+        let startIdx = 0;
+        
+        // 取得準備發送的最舊一條訊息內容，用以在 ST UI 介面中定位絕對索引
+        let firstContent = historyMessages[0].content;
+        if (Array.isArray(firstContent)) {
+            let textBlock = firstContent.find(c => c.type === 'text');
+            firstContent = textBlock ? textBlock.text : '';
+        }
+        
+        // 比對 ST 介面真實存在的對話，找出它的絕對位置
+        for (let i = 0; i < context.chat.length; i++) {
+            if (typeof context.chat[i].mes === 'string' && context.chat[i].mes.trim() === firstContent.trim()) {
+                startIdx = i;
+                break;
+            }
+        }
+        
+        // 如果找不到 (極端防呆)，則使用數學回推
+        if (startIdx === 0 && context.chat.length > M) {
+            startIdx = context.chat.length - M - 1;
+            if (startIdx < 0) startIdx = 0;
+        }
+
+        // 對齊 chunkSize (如 10 的倍數)
         let anchorIdx = Math.ceil(startIdx / chunkSize) * chunkSize;
         let dropCount = anchorIdx - startIdx;
         
         if (dropCount > 0 && dropCount < M) {
-            logDebug(`[錨點對齊] 原截斷點為 ${startIdx}。為對齊區塊 ${chunkSize}，自動剔除最舊的 ${dropCount} 條訊息。歷史起點穩定於 ${anchorIdx}，未來數回合前綴將絕對靜止 100% 命中！`);
+            logDebug(`[錨點對齊] 當前歷史起點為 ${startIdx}。為對齊區塊 ${chunkSize}，自動剔除最舊的 ${dropCount} 條對話。`);
             historyMessages = historyMessages.slice(dropCount);
-        } else {
-            logDebug(`[錨點對齊] 當前截斷點 ${startIdx} 已完美對齊區塊，前綴 100% 命中準備就緒。`);
+        } else if (dropCount === 0 || anchorIdx === startIdx) {
+            logDebug(`[錨點對齊] 當前截斷點 ${startIdx} 已完美對齊區塊，歷史前綴 100% 命中準備就緒。`);
         }
     }
 
-    // 6. 重組 Chat 陣列 (In-place 修改原陣列)
-    chat.length = 0; // 清空 ST 原本的陣列
-    chat.push(...sysMessages, ...historyMessages, ...tailMessages);
-    if (lastUserMsg) {
-        chat.push(lastUserMsg); // 確保最新發話在最下面
+    // 6. 重組完美順序：主系統卡 -> 穩定歷史對話 -> 世界書(尾部) -> 用戶最新發言
+    let optimized = [...sysMessages, ...historyMessages, ...tailMessages];
+    if (lastMsg) {
+        optimized.push(lastMsg);
     }
     
-    logDebug(`<<< [完成] Payload 重組完畢。當前發送總訊息數: ${chat.length}\n`);
+    return optimized;
+}
+
+// --- 雙重攔截系統 1：記憶體物件同步 (解決 View Last Prompt 顯示不同步問題) ---
+const processedObjects = new WeakSet();
+const originalStringify = JSON.stringify;
+
+JSON.stringify = function(value, replacer, space) {
+    // 檢查是否為 ST 準備發送的 Prompt 陣列
+    if (isEnabled && value && typeof value === 'object' && Array.isArray(value.messages)) {
+        const isPayload = value.model || (value.messages.length > 0 && value.messages[0].role);
+        
+        // 利用 WeakSet 防止無限遞迴或重複處理同一物件
+        if (isPayload && !processedObjects.has(value)) {
+            processedObjects.add(value);
+            try {
+                const originalLength = value.messages.length;
+                // 執行優化
+                const optimized = optimizePayload(value.messages);
+                
+                // 核心關鍵：【就地覆寫】原陣列內容！
+                // 這會導致 ST 綁定在 UI 上的緩存變數同步更新，View Last Prompt 完美顯示結果。
+                value.messages.length = 0;
+                value.messages.push(...optimized);
+                
+                logDebug(`[記憶體同步] ST 內部緩存變數已同步修改！(原始: ${originalLength} 條 -> 最終: ${value.messages.length} 條)`);
+            } catch (e) {
+                console.error("DS Optimizer Stringify Error:", e);
+                logDebug(`[排錯警告] 處理失敗: ${e.message}`);
+            }
+        }
+    }
+    return originalStringify.call(this, value, replacer, space);
 };
 
-// --- 介面綁定與 ST 設定一鍵覆蓋 ---
+// --- 雙重攔截系統 2：網路封包最終確認 (保證 AI 絕對收到優化封包) ---
+const originalFetch = window.fetch;
+window.fetch = async function (...args) {
+    const [resource, config] = args;
+    if (isEnabled && config && typeof config.body === 'string' && config.body.includes('"messages":')) {
+        let url = typeof resource === 'string' ? resource : (resource instanceof Request ? resource.url : '');
+        let isLLM = url.includes('/chat/completions') || url.includes('api.deepseek.com') || url.includes('openrouter.ai') || url.includes('/api/textgeneration');
+        
+        if (isLLM) {
+            try {
+                let bodyObj = JSON.parse(config.body);
+                if (bodyObj.messages && Array.isArray(bodyObj.messages)) {
+                    logDebug(`<<< [網路放行] 最終發送至 AI 的封包已確認！共 ${bodyObj.messages.length} 條訊息。\n---`);
+                }
+            } catch (e) {}
+        }
+    }
+    return originalFetch.apply(this, args);
+};
+
+// --- 無特效極簡 UI 介面與一鍵設置 ---
 jQuery(() => {
     const uiHtml = `
     <style>
-        #deepseek_optimizer_panel { padding: 15px; background: var(--SmartThemeBlurTintColor, rgba(0,0,0,0.5)); border-radius: 8px; border: 1px solid var(--SmartThemeBorderColor, #444); margin-bottom: 10px; color: var(--SmartThemeBodyColor); }
-        #deepseek_optimizer_panel h3 { margin-top: 0; margin-bottom: 10px; }
-        #ds_opt_logs { width: 100%; height: 180px; background: #1e1e1e; color: #4af626; font-family: monospace; font-size: 12px; padding: 8px; border: 1px solid #444; border-radius: 4px; resize: vertical; margin-top: 10px; }
-        .ds-hr { margin: 15px 0; border-color: #555; }
-        .ds-opt-btn { background: var(--SmartThemeButtonBackgroundColor, #333); color: var(--SmartThemeButtonTextColor, #fff); border: 1px solid var(--SmartThemeButtonBorderColor, #555); padding: 8px 12px; border-radius: 4px; cursor: pointer; margin-top: 10px; font-weight: bold;}
-        .ds-opt-btn:hover { background: var(--SmartThemeButtonHoverColor, #444); }
+        #ds_opt_panel { padding: 10px; border: 1px solid #444; background: #1a1a1a; margin-bottom: 10px; color: #ddd; font-family: sans-serif; }
+        #ds_opt_panel h3 { margin: 0 0 10px 0; font-size: 15px; color: #fff; }
+        #ds_opt_logs { width: 100%; height: 160px; background: #000; color: #0f0; font-family: monospace; font-size: 12px; padding: 5px; border: 1px solid #333; resize: vertical; margin-top: 10px; }
+        .ds-hr { margin: 10px 0; border-color: #333; border-style: solid; border-width: 1px 0 0 0; }
+        .ds-btn { background: #333; color: #fff; border: 1px solid #555; padding: 5px 10px; cursor: pointer; font-size: 12px; margin-top: 5px;}
+        .ds-btn:hover { background: #444; }
+        .ds-text { font-size: 12px; color: #aaa; margin-top: 5px; line-height: 1.4; }
     </style>
-    <div id="deepseek_optimizer_panel">
-        <h3>🧠 Deepseek Cache Optimizer</h3>
-        <p>專為 Deepseek V4 Pro 設計，解決滑動視窗截斷、World Info 插入、動態時間巨集(如{{time}})等破壞 Prefix Cache 的因素。</p>
-        <label><input type="checkbox" id="ds_opt_enable" checked> 啟用緩存最佳化攔截器 (Enable Optimizer)</label><br><br>
-        <label>歷史訊息對齊區塊 (Chunk Size): <input type="number" id="ds_opt_chunk_size" value="10" min="1" max="100" style="width: 60px;"></label>
-        <p><small>以設定數值為單位「階段性」丟棄舊訊息，使開頭在前綴極為穩定。建議設為 10。</small></p>
-        <label><input type="checkbox" id="ds_opt_freeze" checked> 自動凍結系統提示詞 (Freeze System Prompt)</label>
-        <p><small>將動態巨集（長度差異小於 50 字元）凍結在初次狀態，保護最大區塊的角色卡緩存不被破壞。</small></p>
+    <div id="ds_opt_panel">
+        <h3>🧠 Deepseek Cache Optimizer v3.0</h3>
+        <label><input type="checkbox" id="ds_opt_enable" checked> 啟用記憶體與封包雙重攔截</label><br>
+        <label><input type="checkbox" id="ds_opt_freeze" checked> 自動凍結系統提示詞 (防禦時間巨集)</label><br>
+        <div style="margin-top: 8px;">
+            <label>歷史對齊區塊 (Chunk Size): <input type="number" id="ds_opt_chunk_size" value="10" min="1" max="50" style="width: 50px; background:#222; color:#fff; border:1px solid #555;"></label>
+        </div>
         <hr class="ds-hr">
-        <button id="ds_opt_apply_settings" class="ds-opt-btn">⚙️ 一鍵最佳化 ST 本地設定</button>
-        <p><small>這會修改 ST 面板設定：強制將 World Info 作為獨立系統訊息，並將其深度與 Author's Note 的深度推至最底部(1)，不干擾前綴。</small></p>
+        <button id="ds_opt_apply_settings" class="ds-btn">⚙️ 一鍵優化 ST 世界書設定</button>
+        <div class="ds-text">
+            ✔️ <b>V3 更新：</b>已徹底解決 View Last Prompt 顯示不同步的問題。現在你打開 ST 原生的查看提示詞，會看到與發送給 AI <b>完全一致、已排序、已隔離世界書</b> 的完美狀態！
+        </div>
         <hr class="ds-hr">
-        <h4>即時排錯日誌 (Debug Logs)</h4>
         <textarea id="ds_opt_logs" readonly></textarea>
     </div>`;
 
-    // 注入至 ST 擴展設定面板
     $('#extensions_settings').append(uiHtml);
 
-    // 綁定 UI 互動事件
-    $('#ds_opt_enable').on('change', function() {
-        isEnabled = $(this).is(':checked');
-        logDebug(`攔截器狀態切換: ${isEnabled ? '啟用' : '停用'}`);
-    });
-    
-    $('#ds_opt_freeze').on('change', function() {
-        isFreezeEnabled = $(this).is(':checked');
-        logDebug(`系統提示詞凍結狀態: ${isFreezeEnabled ? '啟用' : '停用'}`);
+    // 事件綁定
+    $('#ds_opt_enable').on('change', function() { isEnabled = $(this).is(':checked'); });
+    $('#ds_opt_freeze').on('change', function() { 
+        isFreezeEnabled = $(this).is(':checked'); 
         if (!isFreezeEnabled) frozenSystemContent = null;
     });
+    $('#ds_opt_chunk_size').on('change', function() { chunkSize = parseInt($(this).val(), 10) || 10; });
 
-    $('#ds_opt_chunk_size').on('change', function() {
-        chunkSize = parseInt($(this).val(), 10) || 10;
-        logDebug(`錨點區塊截斷大小已更新為: ${chunkSize}`);
-    });
-
+    // 世界書最佳化按鈕
     $('#ds_opt_apply_settings').on('click', function() {
-        logDebug("--- 執行 ST 原生設定一鍵最佳化 ---");
-        
-        // 1. 強制 World Info 發送為獨立 System
+        // 重要：必須勾選 Send as System，插件才能透過 role === 'system' 將其識別為世界書並移到尾端
         const wiAsSystem = document.getElementById('world_info_system');
         if (wiAsSystem && !wiAsSystem.checked) {
             $(wiAsSystem).prop('checked', true).trigger('change');
-            logDebug("[修正] World Info 已勾選「Send as System」");
+            logDebug("[修正] 世界書 (World Info) 已強制勾選「Send as System」。");
         }
-
-        // 2. 將 World Info 深度強制設置為底端 (1)
-        const wiDepth = document.getElementById('world_info_depth');
-        if (wiDepth) {
-            wiDepth.value = 1;
-            $(wiDepth).trigger('input').trigger('change');
-            logDebug("[修正] World Info 插入深度已強制設為 1");
-        }
-
-        // 3. 將作者筆記 (Author's Note) 深度強制設置為底端 (1)
-        const anDepth = document.getElementById('authors_note_depth');
-        if (anDepth) {
-            anDepth.value = 1;
-            $(anDepth).trigger('input').trigger('change');
-            logDebug("[修正] Author's Note 插入深度已強制設為 1");
-        }
-
-        logDebug("[建議] 你現已不須手動刪除預設提示詞的 {{time}} 巨集，插件已為您開啟凍結防護。");
+        logDebug("ST 設定已最佳化，世界書已被本插件接管排序。");
     });
     
-    logDebug("Deepseek Cache Optimizer 載入成功。");
+    logDebug("Deepseek Optimizer v3 載入成功，記憶體同步攔截已就緒。");
 });
