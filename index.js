@@ -1,10 +1,9 @@
 /**
- * Deepseek Cache Optimizer v5.0.0 (Ultimate Safe Edition)
- * 使用安全的 Fetch 攔截器，保證不當機。
- * 加入專屬的封包檢視功能，讓你親眼見證排序與截斷的結果！
+ * Deepseek Cache Optimizer v7.0.0
+ * 採用絕對路徑 Import，無視資料夾層級，徹底解決載入崩潰 [object Event] 問題。
  */
 
-import { getContext } from '../../../../extensions.js';
+import { getContext } from '/scripts/extensions.js';
 
 let isEnabled = true;
 let isFreezeEnabled = true;
@@ -12,10 +11,9 @@ let chunkSize = 10;
 let frozenSystemContent = null;
 let lastChatId = null;
 
-// 用來儲存最後一次真正發送給 AI 的封包，供玩家檢視
+// 供玩家檢視的最終封包
 window.DS_LastSentPayload = null;
 
-// --- 介面日誌排錯函數 ---
 function logDebug(message) {
     console.log(`[DS_Optimizer] ${message}`);
     const logArea = document.getElementById('ds_opt_logs');
@@ -26,17 +24,15 @@ function logDebug(message) {
     }
 }
 
-// --- 核心優化排序演算法 ---
 function optimizePayload(messages) {
     if (!messages || messages.length === 0) return messages;
 
     const context = getContext();
     
-    // 1. 聊天室切換偵測
     if (context) {
         const currentChatId = context.chatId;
         if (lastChatId !== currentChatId) {
-            logDebug(`[狀態] 偵測到聊天室切換，重置系統提示凍結快取。`);
+            logDebug(`[狀態] 偵測到聊天切換，重置凍結快取。`);
             lastChatId = currentChatId;
             frozenSystemContent = null;
         }
@@ -46,45 +42,41 @@ function optimizePayload(messages) {
     let historyMessages = [];
     let tailMessages = [];
 
-    // 2. 絕對排序分類 (隔離世界書等動態破壞源)
     for (let i = 0; i < messages.length; i++) {
         let msg = messages[i];
         if (i === 0 && msg.role === 'system') {
-            sysMessages.push(msg); // 頂部的唯一主提示詞
+            sysMessages.push(msg); 
         } else if (msg.role === 'system') {
-            tailMessages.push(msg); // 觸發的世界書 (World Info) 或 Author's Note
+            tailMessages.push(msg); 
         } else {
-            historyMessages.push(msg); // 歷史對話
+            historyMessages.push(msg); 
         }
     }
 
-    // 3. 系統提示凍結 (防禦 {{time}} 時間巨集)
     if (isFreezeEnabled && sysMessages.length > 0) {
         let mainSys = sysMessages[0];
         let contentStr = typeof mainSys.content === 'string' ? mainSys.content : JSON.stringify(mainSys.content);
         
         if (!frozenSystemContent) {
             frozenSystemContent = contentStr;
-            logDebug("[緩存建構] 建立初代凍結系統提示 (Prefix Cache 基石)。");
+            logDebug("[緩存建構] 建立初代凍結系統提示。");
         } else {
             let diff = Math.abs(contentStr.length - frozenSystemContent.length);
             if (diff > 0 && diff <= 50) {
                 mainSys.content = typeof mainSys.content === 'string' ? frozenSystemContent : JSON.parse(frozenSystemContent);
-                logDebug(`[緩存守護] 攔截到主提示詞微小跳動 (差異 ${diff} 字元)，已強制還原防護！`);
+                logDebug(`[緩存守護] 防禦時間巨集，強制還原防護 (差異 ${diff} 字元)！`);
             } else if (diff > 50) {
                 frozenSystemContent = contentStr;
-                logDebug(`[緩存重建] 主提示詞顯著修改 (差異 ${diff} 字元)，更新凍結快取。`);
+                logDebug(`[緩存重建] 主提示詞顯著修改，更新快取。`);
             }
         }
     }
 
-    // 4. 抽取最新發話 (保證放在最尾端，不被世界書壓在下面)
     let lastMsg = null;
     if (historyMessages.length > 0 && historyMessages[historyMessages.length - 1].role === 'user') {
         lastMsg = historyMessages.pop(); 
     }
 
-    // 5. 絕對錨點截斷演算法 (解決 ST 滑動視窗造成的開頭跳動)
     let M = historyMessages.length; 
     if (context && context.chat && M > 0 && chunkSize > 1) {
         let UI_Total = context.chat.length;
@@ -95,10 +87,10 @@ function optimizePayload(messages) {
         let dropCount = anchorIdx - startIdx;
         
         if (dropCount > 0 && dropCount < M) {
-            logDebug(`[錨點對齊] 自動剔除最舊 ${dropCount} 條對話，使歷史起點對齊區塊倍數。`);
+            logDebug(`[錨點對齊] 自動剔除最舊 ${dropCount} 條對話，起點已對齊。`);
             historyMessages = historyMessages.slice(dropCount);
         } else if (dropCount === 0 || anchorIdx === startIdx) {
-            logDebug(`[錨點對齊] 當前起點已完美對齊區塊，前綴 100% 命中準備就緒。`);
+            logDebug(`[錨點對齊] 前綴 100% 命中準備就緒。`);
         }
     }
 
@@ -106,7 +98,6 @@ function optimizePayload(messages) {
         logDebug(`[動態隔離] 成功抽離 ${tailMessages.length} 條世界書/動態設定，強制移至尾部！`);
     }
 
-    // 6. 重組順序：主系統卡 -> 穩定歷史對話 -> 世界書(尾部) -> 用戶最新發言
     let optimized = [...sysMessages, ...historyMessages, ...tailMessages];
     if (lastMsg) {
         optimized.push(lastMsg);
@@ -115,19 +106,14 @@ function optimizePayload(messages) {
     return optimized;
 }
 
-// --- 極致安全的底層網路攔截器 ---
 const originalFetch = window.fetch;
 window.fetch = async function (...args) {
     try {
         const [resource, config] = args;
         
-        if (isEnabled && config && config.body && typeof config.body === 'string') {
-            let url = '';
-            if (typeof resource === 'string') url = resource;
-            else if (resource instanceof Request) url = resource.url;
-            
-            // 涵蓋所有主流 AI API 路徑
-            let isLLM = url.includes('/chat/completions') || url.includes('/api/') || url.includes('api.deepseek.com') || url.includes('openrouter.ai');
+        if (isEnabled && config && typeof config === 'object' && config.body && typeof config.body === 'string') {
+            let url = typeof resource === 'string' ? resource : (resource instanceof Request ? resource.url : '');
+            let isLLM = url.includes('/chat/completions') || url.includes('/api/') || url.includes('api.deepseek.com') || url.includes('openrouter.ai') || url.includes('/v1/generate');
             
             if (isLLM) {
                 let bodyObj = JSON.parse(config.body);
@@ -135,28 +121,22 @@ window.fetch = async function (...args) {
                     logDebug(`\n>>> [攔截啟動] 捕獲到網路發送封包，進行重組排序...`);
                     
                     let optimizedMessages = optimizePayload(bodyObj.messages);
-                    
-                    // 覆寫回封包
                     bodyObj.messages = optimizedMessages;
                     config.body = JSON.stringify(bodyObj);
                     
-                    // 儲存到全域供玩家隨時檢視
                     window.DS_LastSentPayload = optimizedMessages;
-                    
                     logDebug(`<<< [網路放行] 封包重組成功！最終發送: ${optimizedMessages.length} 條`);
                 }
             }
         }
     } catch (e) {
-        console.error("[DS_Optimizer] 攔截器內部錯誤 (已安全忽略):", e);
-        logDebug(`[警告] 處理封包時發生錯誤，已原樣放行以防卡死。`);
+        console.error("[DS_Optimizer] 安全忽略內部錯誤:", e);
     }
     
-    // 【關鍵修復】必須綁定 window，否則會觸發 Illegal Invocation 導致 ST 徹底死機
+    // 【最高安全層級】強制綁定 window 以防止卡死
     return originalFetch.apply(window, args);
 };
 
-// --- 無特效極簡 UI 介面 ---
 jQuery(() => {
     const uiHtml = `
     <style>
@@ -171,7 +151,7 @@ jQuery(() => {
         .ds-text { font-size: 12px; color: #aaa; margin-top: 5px; line-height: 1.4; }
     </style>
     <div id="ds_opt_panel">
-        <h3>🧠 Deepseek Cache Optimizer v5.0</h3>
+        <h3>🧠 Deepseek Cache Optimizer v7.0</h3>
         <label><input type="checkbox" id="ds_opt_enable" checked> 啟用底層網路封包攔截</label><br>
         <label><input type="checkbox" id="ds_opt_freeze" checked> 自動凍結系統提示詞 (防禦時間巨集)</label><br>
         <div style="margin-top: 8px;">
@@ -181,7 +161,7 @@ jQuery(() => {
         <button id="ds_opt_apply_settings" class="ds-btn">⚙️ 一鍵優化 ST 世界書設定</button>
         <button id="ds_opt_view_payload" class="ds-btn ds-btn-highlight">🔍 檢視實際發送給 AI 的封包</button>
         <div class="ds-text">
-            ⚠️ <b>請注意：</b>不要再點擊 ST 原生的「View Last Prompt」！ST 原生按鈕讀取的是假快取。請點擊上方<b>「檢視實際發送封包」</b>來親眼驗證真正的排序結果！
+            ⚠️ <b>驗證方式：</b>請無視 ST 原生選單裡的 View Last Prompt。與 AI 對話一次後，點擊上方綠色按鈕，即可親眼見證完美的排序結果！
         </div>
         <hr class="ds-hr">
         <textarea id="ds_opt_logs" readonly></textarea>
@@ -196,33 +176,29 @@ jQuery(() => {
     });
     $('#ds_opt_chunk_size').on('change', function() { chunkSize = parseInt($(this).val(), 10) || 10; });
 
-    // 一鍵設定世界書
     $('#ds_opt_apply_settings').on('click', function() {
         const wiAsSystem = document.getElementById('world_info_system');
         if (wiAsSystem && !wiAsSystem.checked) {
             $(wiAsSystem).prop('checked', true).trigger('change');
-            logDebug("[設定修正] 世界書 (World Info) 已強制勾選「Send as System」。");
+            logDebug("[設定修正] 世界書已強制勾選「Send as System」。");
         } else {
             logDebug("[設定確認] 世界書設定已是最佳狀態。");
         }
     });
 
-    // 專屬封包檢視按鈕
     $('#ds_opt_view_payload').on('click', function() {
         if (!window.DS_LastSentPayload) {
-            alert("尚未發送任何對話，或封包尚未被攔截！請先與 AI 對話一次。");
+            alert("尚未發送任何對話！請先與 AI 對話一次，攔截器才會產生紀錄。");
             return;
         }
-        
-        // 將排序後的陣列直接顯示在新視窗或覆蓋在畫面上
         const payloadStr = JSON.stringify(window.DS_LastSentPayload, null, 2);
         const win = window.open("", "DS_Payload_View", "width=600,height=700,scrollbars=yes");
         win.document.body.innerHTML = `
-            <h3 style="font-family: sans-serif; color: #333;">📦 Deepseek 實際接收到的提示詞排序</h3>
-            <p style="font-family: sans-serif; font-size: 13px; color: #555;">請往下拉到底部，你會發現 <b>World Info (世界書)</b> 被完美隔離在倒數第二句，而不會干擾最上方的歷史對話！</p>
+            <h3 style="font-family: sans-serif; color: #333;">📦 攔截器檢視：Deepseek 實際接收到的封包</h3>
+            <p style="font-family: sans-serif; font-size: 13px; color: #555;">請往下拉到底部，你會發現 <b>World Info (世界書)</b> 被完美隔離在倒數第二句！</p>
             <pre style="background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word;">${payloadStr}</pre>
         `;
     });
     
-    logDebug("Deepseek Optimizer v5 載入成功，安全攔截網已就緒。");
+    logDebug("Deepseek Optimizer v7 載入成功！");
 });
